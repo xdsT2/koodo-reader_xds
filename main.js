@@ -21,6 +21,12 @@ const os = require("os");
 const { execFile } = require("child_process");
 const store = new Store();
 const fs = require("fs");
+const http = require("http");
+
+// 设置全局变量，供 eval() 执行的插件脚本使用
+global.http = http;
+global.path = path;
+global.fs = fs;
 const configDir = app.getPath("userData");
 const dirPath = path.join(configDir, "uploads");
 const packageJson = require("./package.json");

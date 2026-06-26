@@ -21,7 +21,7 @@ export const initTheme = () => {
   const style = document.createElement("link");
   style.rel = "stylesheet";
   let isNight = false;
-  if (isElectron) {
+  if (isElectron && window.require) {
     const { ipcRenderer } = window.require("electron");
     isNight = ipcRenderer.sendSync("system-color");
   } else {

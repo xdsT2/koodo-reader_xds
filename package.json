@@ -137,7 +137,7 @@
     },
     "directories": {
       "buildResources": "assets",
-      "output": "dist5"
+      "output": "dist1"
     },
     "publish": {
       "provider": "github",

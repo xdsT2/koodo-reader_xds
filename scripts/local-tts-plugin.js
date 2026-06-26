@@ -2,9 +2,9 @@
 // API: http://192.168.1.240:3000/api/reader/tts/stream
 // GET 请求，返回 MP3 音频流
 
-const http = require("http");
-const path = require("path");
-const fs = require("fs");
+var http = require("http");
+var path = require("path");
+var fs = require("fs");
 
 const getAudioPath = async (text, speed, dirPath, config) => {
   const log = global.__ttsLog || ((msg) => {});

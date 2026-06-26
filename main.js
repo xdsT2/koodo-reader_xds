@@ -24,6 +24,10 @@ const fs = require("fs");
 const configDir = app.getPath("userData");
 const dirPath = path.join(configDir, "uploads");
 const packageJson = require("./package.json");
+
+// 豆包 TTS 服务的进程句柄和端口（模块作用域，供 killDoubaoTTSProcess 等访问）
+let doubaoTTSProcess = null;
+const TTS_PORT = 18765;
 let mainWin;
 let tray = null;
 let isQuitting = false;
@@ -1008,162 +1012,18 @@ const createMainWin = () => {
   });
   ipcMain.handle("generate-tts", async (event, voiceConfig) => {
     let { text, speed, plugin, config } = voiceConfig;
-    // 豆包 TTS 引擎（本地 Python WebSocket 服务）
+    global.__ttsLog = ttsLog;
     if (plugin && plugin.key === "doubao_tts_voice") {
-      try {
-        const net = require("net");
-
-        // 从 plugin.voiceList 查找完整音色名（兼容短名 vs 全名不一致的情况）
-        let voiceName = config?.voiceName || "zh_female_xiaohe_uranus_bigtts";
-        const matchedVoice = (plugin.voiceList || []).find(
-          (v) => v.name === voiceName
-        );
-        if (matchedVoice) {
-          // 用 voiceList 中的 config.speaker 或 name（全名）
-          voiceName = matchedVoice.config?.speaker || matchedVoice.name;
-        } else {
-          // 查不到就尝试补齐 _uranus_bigtts 后缀
-          const fullSuffix = "_uranus_bigtts";
-          if (!voiceName.endsWith(fullSuffix)) {
-            // 先试补全后能否在 voiceList 中找到
-            const fullName = voiceName + fullSuffix;
-            const fallbackVoice = (plugin.voiceList || []).find(
-              (v) => v.name === fullName
-            );
-            if (fallbackVoice) {
-              voiceName = fallbackVoice.config?.speaker || fullName;
-            }
-          }
-        }
-        ttsLog("[DoubaoTTS] generate: text.len=" + (text?.length || 0) + ", voice=" + voiceName + ", speed=" + speed);
-
-        // 前端传入的 speed 已做 speed*100-100 转换：
-        //   voiceSpeed=1.0 → speed=0, voiceSpeed=2.0 → speed=100, voiceSpeed=0.5 → speed=-50
-        // 豆包双向流式 API 的 speech_rate 取值范围 [-50, 100]，含义完全一致：
-        //   100 → 2.0x, -50 → 0.5x, 0 → 1.0x
-        // 所以直接用，只需 clamp 到 API 允许范围
-        let speechRate = Number(speed) || 0;
-        if (isNaN(speechRate)) speechRate = 0;
-        speechRate = Math.min(Math.max(speechRate, -50), 100);
-
-        // 自动启动 Python TTS 服务（首次调用或服务挂掉时）
-        if (!doubaoTTSProcess) {
-          ttsLog("[DoubaoTTS] Python 服务未运行，自动启动...");
-          const serverInfo = resolveDoubaoServer();
-          if (!serverInfo) {
-            ttsLog("[DoubaoTTS] 找不到 doubao_tts_server.exe 或 .py，请检查 test/doubao-tts-test/");
-            return null;
-          }
-          ttsLog("[DoubaoTTS] cmd: " + serverInfo.cmd + " args: " + JSON.stringify(serverInfo.args));
-          const { spawn } = require("child_process");
-          try {
-            doubaoTTSProcess = spawn(
-              serverInfo.cmd,
-              [...serverInfo.args, "--port", String(TTS_PORT)],
-              {
-                stdio: ["ignore", "pipe", "pipe"],
-                cwd: serverInfo.cwd,
-                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-              }
-            );
-            doubaoTTSProcess.stdout.on("data", (d) => {
-              const s = d.toString().trim();
-              ttsLog("[DoubaoTTS][py] " + s);
-              log.info("[DoubaoTTS] " + s);
-            });
-            doubaoTTSProcess.stderr.on("data", (d) => {
-              const s = d.toString().trim();
-              ttsLog("[DoubaoTTS][py-err] " + s);
-              log.warn("[DoubaoTTS] " + s);
-            });
-            doubaoTTSProcess.on("exit", (code) => {
-              ttsLog("[DoubaoTTS] Python 服务退出, code=" + code);
-              doubaoTTSProcess = null;
-            });
-          } catch (spawnErr) {
-            ttsLog("[DoubaoTTS] spawn 失败: " + (spawnErr.message || spawnErr));
-            return null;
-          }
-          // 等待端口就绪（最多 8 秒）
-          let ready = false;
-          for (let i = 0; i < 40; i++) {
-            await new Promise((r) => setTimeout(r, 200));
-            ready = await new Promise((resolve) => {
-              const probe = net.createConnection({ port: TTS_PORT, host: "127.0.0.1" }, () => {
-                probe.end();
-                resolve(true);
-              });
-              probe.on("error", () => resolve(false));
-            });
-            if (ready) break;
-          }
-          if (!ready) {
-            ttsLog("[DoubaoTTS] Python 服务启动超时（8s）");
-            return null;
-          }
-          ttsLog("[DoubaoTTS] Python 服务就绪");
-        }
-
-        // 调用本地 TCP 服务合成
-        const wavPath = await new Promise((resolve, reject) => {
-          const client = net.createConnection({ port: TTS_PORT, host: "127.0.0.1" }, () => {
-            client.write(JSON.stringify({ text, voice: voiceName, format: "pcm", sample_rate: 24000, speech_rate: speechRate }));
-          });
-          let data = "";
-          client.on("data", (chunk) => { data += chunk.toString(); });
-          client.on("end", () => {
-            try {
-              const resp = JSON.parse(data);
-              if (resp.success) {
-                const audioBuf = Buffer.from(resp.audio, "base64");
-                const ttsDir = path.join(dirPath, "tts");
-                if (!fs.existsSync(ttsDir)) fs.mkdirSync(ttsDir, { recursive: true });
-                const fileName = `doubao_${Date.now()}.wav`;
-                const filePath = path.join(ttsDir, fileName);
-                const sampleRate = resp.sample_rate || 24000;
-                const wavHeader = Buffer.alloc(44);
-                const dataSize = audioBuf.length;
-                wavHeader.write("RIFF", 0);
-                wavHeader.writeUInt32LE(dataSize + 36, 4);
-                wavHeader.write("WAVE", 8);
-                wavHeader.write("fmt ", 12);
-                wavHeader.writeUInt32LE(16, 16);
-                wavHeader.writeUInt16LE(1, 20);
-                wavHeader.writeUInt16LE(1, 22);
-                wavHeader.writeUInt32LE(sampleRate, 24);
-                wavHeader.writeUInt32LE(sampleRate * 2, 28);
-                wavHeader.writeUInt16LE(2, 32);
-                wavHeader.writeUInt16LE(16, 34);
-                wavHeader.write("data", 36);
-                wavHeader.writeUInt32LE(dataSize, 40);
-                fs.writeFileSync(filePath, Buffer.concat([wavHeader, audioBuf]));
-                ttsLog("[DoubaoTTS] 合成成功: " + filePath + " (" + dataSize + " bytes pcm)");
-                resolve(filePath);
-              } else {
-                ttsLog("[DoubaoTTS] 合成失败: " + (resp.error || "unknown"));
-                reject(new Error(resp.error || "TTS synthesis failed"));
-              }
-            } catch (e) {
-              ttsLog("[DoubaoTTS] 响应解析失败: " + (e.message || e));
-              reject(e);
-            }
-          });
-          client.on("error", (e) => {
-            ttsLog("[DoubaoTTS] TCP 错误: " + (e.message || e));
-            reject(e);
-          });
-          client.setTimeout(60000, () => {
-            client.destroy();
-            ttsLog("[DoubaoTTS] 合成超时（60s）");
-            reject(new Error("timeout"));
-          });
-        });
-        return wavPath;
-      } catch (e) {
-        ttsLog("[DoubaoTTS] generate 异常: " + (e.message || e));
-        console.error("[DoubaoTTS] generate error:", e);
-        return null;
-      }
+      ttsLog("[DoubaoPlugin] Using plugin script directly (no Python)");
+      let voiceFunc = plugin.script;
+      eval(voiceFunc);
+      return global.getAudioPath(text, speed, dirPath, config);
+    }
+    if (plugin && plugin.key === "local_tts_voice") {
+      ttsLog("[LocalTTS] Using local TTS plugin script");
+      let voiceFunc = plugin.script;
+      eval(voiceFunc);
+      return global.getAudioPath(text, speed, dirPath, config);
     }
     let voiceFunc = plugin.script;
     // eslint-disable-next-line no-eval
@@ -1265,10 +1125,7 @@ const createMainWin = () => {
   });
 
   // ── 豆包 TTS 服务 ──────────────────────────────────────────
-  let doubaoTTSProcess = null;
-  const TTS_PORT = 18765;
-
-  ipcMain.handle("doubao-tts-start", async () => {
+  doubaoTTSProcess = null;  ipcMain.handle("doubao-tts-start", async () => {
     if (doubaoTTSProcess) return { ok: true, msg: "already running" };
     const serverInfo = resolveDoubaoServer();
     if (!serverInfo) return { ok: false, error: "找不到 doubao_tts_server" };
@@ -1295,10 +1152,7 @@ const createMainWin = () => {
   });
 
   ipcMain.handle("doubao-tts-stop", async () => {
-    if (doubaoTTSProcess) {
-      doubaoTTSProcess.kill();
-      doubaoTTSProcess = null;
-    }
+    killDoubaoTTSProcess();
     return { ok: true };
   });
 
@@ -2023,12 +1877,44 @@ const createMainWin = () => {
 const ttsLog = (msg) => {
   const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
   const line = `[${timestamp}] ${msg}\n`;
+  // 便携版/打包后 __dirname 在 asar 内不可写，改写入 userData（%APPDATA\koodo-reader）
+  const userData = (app && app.isReady()) ? app.getPath("userData") : __dirname;
+  const logPath = path.join(userData, "tts-debug.log");
   try {
-    const logPath = path.join(__dirname, "tts-debug.log");
     fs.appendFileSync(logPath, line, "utf-8");
   } catch(e) {
     // silently fail
   }
+};
+
+// 安全杀掉豆包 TTS 进程
+const killDoubaoTTSProcess = () => {
+  if (doubaoTTSProcess) {
+    try { doubaoTTSProcess.kill(); } catch (_) {}
+    doubaoTTSProcess = null;
+  }
+};
+
+// 强制杀掉占用 TTS 端口的残留进程（应用重启后旧进程可能还在）
+const forceKillPortProcess = (port) => {
+  try {
+    const { execSync } = require("child_process");
+    const result = execSync(
+      `netstat -ano | findstr :${port} | findstr LISTENING`,
+      { encoding: "utf-8", timeout: 5000 }
+    );
+    const lines = result.trim().split("\n");
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[parts.length - 1];
+      if (pid && pid !== "0") {
+        try {
+          process.kill(parseInt(pid, 10), "SIGKILL");
+          ttsLog("[DoubaoTTS] force kill PID=" + pid);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
 };
 
 // 查找豆包 TTS 用的 Python 解释器（项目内 venv 优先）
@@ -2072,6 +1958,74 @@ const resolveDoubaoServer = () => {
     return { cmd: pythonPath, args: [scriptPath], cwd: ttsDir };
   }
   return null;
+};
+
+// ============================================
+// 自动注册本地 TTS 插件
+// ============================================
+const registerLocalTTSPlugin = async () => {
+  try {
+    const storagePath = path.join(dirPath, "data");
+    const { SqlStatement } = await import("./src/assets/lib/kookit-extra.min.mjs");
+    if (!SqlStatement) {
+      console.log("[PluginInit] SqlStatement not available yet, will retry later");
+      return;
+    }
+    const db = getDBConnection("plugins", storagePath, SqlStatement.sqlStatement);
+    if (!db) {
+      console.log("[PluginInit] Failed to get DB connection");
+      return;
+    }
+    
+    const existing = db.prepare("SELECT * FROM plugins WHERE key = ?").get("local_tts_voice");
+    if (existing) {
+      db.prepare("DELETE FROM plugins WHERE key = ?").run("local_tts_voice");
+      ttsLog("[PluginInit] 删除旧版本地TTS插件，重新注册...");
+    }
+    
+    // Read the plugin script from file
+    const scriptPath = path.join(__dirname, "scripts", "local-tts-plugin.js");
+    let script = "";
+    if (fs.existsSync(scriptPath)) {
+      script = fs.readFileSync(scriptPath, "utf-8");
+    } else {
+      ttsLog("[PluginInit] 本地TTS插件脚本文件不存在: " + scriptPath);
+      return;
+    }
+    
+    const voiceList = [
+      { name: "zh_female_wenroutaozi_uranus_bigtts", displayName: "温柔桃子（升级版）", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_male_junyu_uranus_bigtts", displayName: "磁性俊宇（升级版）", gender: "male", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_female_sunshine_uranus_bigtts", displayName: "阳光甜妹（升级版）", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_female_wenroutaozi_classic_bigtts", displayName: "温柔桃子（经典版）", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_female_sophie_uranus_bigtts", displayName: "魅力苏菲", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_female_xiaohe_uranus_bigtts", displayName: "邻家女孩", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_female_saijiao_uranus_bigtts", displayName: "撒娇学妹", gender: "female", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_male_linjia_uranus_bigtts", displayName: "邻家男孩", gender: "male", locale: "zh-CN", plugin: "local_tts_voice" },
+      { name: "zh_male_youyou_uranus_bigtts", displayName: "悠悠君子", gender: "male", locale: "zh-CN", plugin: "local_tts_voice" },
+    ];
+    
+    const config = { serverHost: "192.168.1.240", serverPort: 3000, delay: 0 };
+    
+    const insert = db.prepare(`INSERT OR REPLACE INTO plugins (key, type, displayName, icon, version, config, autoValue, langList, voiceList, scriptSHA256, script) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    insert.run(
+      "local_tts_voice",
+      "voice",
+      "本地 TTS",
+      "speaker",
+      "1.0.0",
+      JSON.stringify(config),
+      null,
+      null,
+      JSON.stringify(voiceList),
+      "",
+      script
+    );
+    ttsLog("[PluginInit] 本地TTS插件注册成功!");
+  } catch (err) {
+    ttsLog("[PluginInit] 注册本地TTS插件失败: " + (err.message || err));
+  }
 };
 
 // ============================================
@@ -2142,11 +2096,13 @@ const registerDoubaoPlugin = async () => {
 
 app.on("ready", async () => {
   await registerDoubaoPlugin();
+  await registerLocalTTSPlugin();
   createMainWin();
 });
 app.on("before-quit", () => {
   isQuitting = true;
   destroyDiscordRPC();
+  killDoubaoTTSProcess();
 });
 app.on("window-all-closed", () => {
   app.quit();

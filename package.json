@@ -120,26 +120,14 @@
     "productName": "Koodo Reader",
     "copyright": "Copyright (c) 2020-2025 ${author}",
     "asar": true,
-    "asarUnpack": [
-      "test/doubao-tts-test/doubao_tts_server.exe",
-      "test/doubao-tts-test/.env"
-    ],
+    "asarUnpack": [],
     "files": [
       "build/**/*",
       "node_modules/**/*",
       "package.json",
       "src/assets/lib/kookit-extra.min.mjs",
       "main.js",
-      "scripts/**/*",
-      {
-        "from": "test/doubao-tts-test/",
-        "to": "test/doubao-tts-test/",
-        "filter": [
-          "doubao_tts_server.exe",
-          "doubao_tts_server.py",
-          ".env"
-        ]
-      }
+      "scripts/**/*"
     ],
     "protocols": {
       "name": "KoodoReader",

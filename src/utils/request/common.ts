@@ -31,7 +31,7 @@ export const getPluginList = async () => {
     getPublicUrl() + `/api/get_plugins?name=${navigator.language}`
   );
   cachedPluginList = res.data.plugins;
-  // 本地注入豆包语音合成插件（HTTP 单向流式，与官方插件一致）
+  // 本地注入豆包语音合成插件（本地 Python WebSocket 服务）
   const doubaoPlugin = {
     plugin: {
       identifier: "doubao_tts_voice",
@@ -57,12 +57,17 @@ export const getPluginList = async () => {
           description: "选择使用的模型版本",
         },
       },
-      voiceList: [],
-      scriptSHA256: "doubao_http_v1",
-      script: "placeholder",
+      voiceList: [
+        { name: "zh_female_xiaohe_uranus_bigtts", displayName: "小何 2.0", gender: "female", locale: "zh-CN", plugin: "doubao_tts_voice" },
+        { name: "zh_female_vv_uranus_bigtts", displayName: "Vivi 2.0", gender: "female", locale: "zh-CN", plugin: "doubao_tts_voice" },
+        { name: "zh_male_m191_uranus_bigtts", displayName: "云舟 2.0", gender: "male", locale: "zh-CN", plugin: "doubao_tts_voice" },
+        { name: "zh_male_taocheng_uranus_bigtts", displayName: "小天 2.0", gender: "male", locale: "zh-CN", plugin: "doubao_tts_voice" },
+        { name: "zh_female_cancan_uranus_bigtts", displayName: "知性灿灿 2.0", gender: "female", locale: "zh-CN", plugin: "doubao_tts_voice" },
+        { name: "zh_female_sophie_uranus_bigtts", displayName: "魅力苏菲 2.0", gender: "female", locale: "zh-CN", plugin: "doubao_tts_voice" },
+      ],
     },
     name: "豆包语音合成",
-    configuration: "需要火山引擎 API Key，从控制台获取。",
+    configuration: "无需额外配置，启动应用后自动使用本地 TTS 服务。",
   };
   cachedPluginList!.push(doubaoPlugin);
   return cachedPluginList;

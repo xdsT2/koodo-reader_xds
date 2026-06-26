@@ -115,15 +115,46 @@ const getTTSAudio = async (text, speed, config) => {
       })
       .catch((error) => {
         const elapsed = Date.now() - startTime;
-        log("[DoubaoPlugin] HTTP ERROR after " + elapsed + "ms: " + (error.message || error));
+        let errorMsg = "[DoubaoPlugin] HTTP ERROR after " + elapsed + "ms: " + (error.message || error);
+        let userMsg = "";
+        
         if (error.response) {
           log("[DoubaoPlugin] response status=" + error.response.status + ", data=" + JSON.stringify(error.response.data).substring(0, 200));
+          const respData = error.response.data;
+          let code = 0;
+          let msg = "";
+          try {
+            const parsed = typeof respData === 'string' ? JSON.parse(respData) : respData;
+            code = parsed.code || parsed.error_code || 0;
+            msg = parsed.message || parsed.error_msg || "";
+          } catch (e) {
+            code = error.response.status;
+            msg = typeof respData === 'string' ? respData.substring(0, 100) : "HTTP " + error.response.status;
+          }
+          
+          if (code === 401 || code === 403 || msg.includes("auth") || msg.includes("invalid") || msg.includes("expired")) {
+            userMsg = "[豆包TTS] API Key无效或已过期，请检查配置";
+          } else if (code === 402 || msg.includes("balance") || msg.includes("quota") || msg.includes("欠费") || msg.includes("余额")) {
+            userMsg = "[豆包TTS] 账户余额不足或配额已用完，请充值";
+          } else if (code === 429) {
+            userMsg = "[豆包TTS] 请求过于频繁，请稍后重试";
+          } else if (code === 500 || code === 502 || code === 503) {
+            userMsg = "[豆包TTS] 服务端错误，请稍后重试";
+          } else {
+            userMsg = "[豆包TTS] 服务异常: " + code + " - " + msg;
+          }
+          log("[DoubaoPlugin] user friendly msg: " + userMsg);
         } else if (error.code === 'ECONNABORTED') {
           log("[DoubaoPlugin] Request TIMEOUT (60s)");
+          userMsg = "[豆包TTS] 请求超时，请检查网络";
         } else if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
           log("[DoubaoPlugin] Network error: " + error.code + " - cannot reach API server");
+          userMsg = "[豆包TTS] 网络连接失败，请检查网络";
         }
-        reject("[DoubaoPlugin] Failed: " + (error.message || "unknown error"));
+        
+        const finalMsg = userMsg || "[DoubaoPlugin] Failed: " + (error.message || "unknown error");
+        log(errorMsg);
+        reject(finalMsg);
       });
   });
 };

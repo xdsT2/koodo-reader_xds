@@ -29,25 +29,34 @@ class TTSUtil {
       (item) => item.index >= currentIndex - 10
     );
     return new Promise<string>(async (resolve) => {
-      let audioPath = this.audioPaths.find(
-        (item) => item.index === currentIndex
-      )?.audioPath;
-      if (!audioPath) {
-        resolve("loaderror");
-        return;
+      const checkInterval = 200;
+
+      ttsLog("[TTSUtil] readAloud: waiting for index=" + currentIndex + ", processing=" + this.processingIndexes.has(currentIndex));
+
+      while (true) {
+        let audioPath = this.audioPaths.find(
+          (item) => item.index === currentIndex
+        )?.audioPath;
+
+        if (audioPath) {
+          ttsLog("[TTSUtil] readAloud: audio ready for index=" + currentIndex);
+          var sound = new Howl({
+            src: [audioPath],
+            format: [getFormatFromAudioPath(audioPath)],
+            onloaderror: () => {
+              resolve("loaderror");
+            },
+            onload: async () => {
+              this.player.play();
+              resolve("load");
+            },
+          });
+          this.player = sound;
+          return;
+        }
+
+        await new Promise(r => setTimeout(r, checkInterval));
       }
-      var sound = new Howl({
-        src: [audioPath],
-        format: [getFormatFromAudioPath(audioPath)],
-        onloaderror: () => {
-          resolve("loaderror");
-        },
-        onload: async () => {
-          this.player.play();
-          resolve("load");
-        },
-      });
-      this.player = sound;
     });
   }
   static async cacheAudio(
@@ -300,7 +309,7 @@ class TTSUtil {
       ttsLog("[TTSUtil] getAudioPath: official-ai-voice returned empty");
       return "";
     } else {
-      ttsLog("[TTSUtil] getAudioPath: plugin=" + voiceEngine + ", text.length=" + text.length + ", speed=" + speed);
+      ttsLog("[TTSUtil] getAudioPath: plugin=" + voiceEngine + ", text.length=" + text.length + ", speed=" + speed + ", voiceName=" + (voice?.name || "UNDEFINED") + ", pluginConfig=" + JSON.stringify(plugin.config));
       let startTime = Date.now();
       let audioPath = await window
         .require("electron")

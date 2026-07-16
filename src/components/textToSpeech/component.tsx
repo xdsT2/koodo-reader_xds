@@ -487,6 +487,7 @@ class TextToSpeech extends React.Component<
     newVoiceEngine: string,
     previousEngine: string
   ) => {
+    ttsLog("[TTS] handleVoiceSwitch: 开始切换语音 newVoiceName=" + newVoiceName + ", newVoiceEngine=" + newVoiceEngine + ", previousEngine=" + previousEngine + ", currentIndex=" + this.state.currentIndex);
     if (!this.state.isAudioOn || this.nodeList.length === 0) return;
 
     const currentIndex = this.state.currentIndex;
@@ -743,18 +744,77 @@ class TextToSpeech extends React.Component<
         false,
         node.voiceEngine === "official-ai-voice-plugin"
       );
-      ttsLog("[TTS] handleCustomRead: pre-cache done, now play index=" + index);
+      
+      // 播放失败时的重试机制：等待并检查是否有新合成
       let res = await this.handleSpeech(index);
-      // 代次变更 → 新的朗读已开始，旧循环退出（不报错、不 setState）
+      
+      // 代次变更 → 新的朗读已开始，旧循环退出
       if (this.readGeneration !== myGen) {
         ttsLog("[TTS] handleCustomRead: generation changed after handleSpeech, aborting");
         return;
       }
+      
+      // 如果播放失败，等待并检查是否有新合成
       if (res === "error") {
-        toast.error(this.props.t("Audio loading failed, stopped playback"));
-        this.setState({ isAudioOn: false });
-        this.nodeList = [];
-        return;
+        ttsLog("[TTS] handleCustomRead: playback failed at index=" + index + ", waiting for new synthesis");
+
+        // 最多等待 120 秒，每秒检查一次
+        const MAX_WAIT = 120;
+        let recovered = false;
+
+        for (let wait = 0; wait < MAX_WAIT; wait++) {
+          await new Promise(r => setTimeout(r, 1000));
+
+          // 检查是否还在播放状态
+          if (this.state.isPaused || !this.state.isAudioOn || this.readGeneration !== myGen) {
+            ttsLog("[TTS] handleCustomRead: stopped during wait");
+            return;
+          }
+
+          // 检查是否有新的音频合成完成
+          const audioPaths = TTSUtil.getAudioPaths();
+          const hasNewAudio = audioPaths.some((p: any) => p.index === index);
+
+          if (hasNewAudio) {
+            ttsLog("[TTS] handleCustomRead: new audio found at index=" + index + " after " + (wait + 1) + "s");
+            res = await this.handleSpeech(index);
+
+            if (res !== "error") {
+              ttsLog("[TTS] handleCustomRead: recovered and playing at index=" + index);
+              recovered = true;
+              break;
+            }
+          }
+        }
+
+        // 等待后仍然失败，继续等待而不是停止
+        if (!recovered && res === "error") {
+          ttsLog("[TTS] handleCustomRead: no recovery after 120s, continuing to wait");
+          // 继续无限等待，直到音频合成完成
+          while (true) {
+            await new Promise(r => setTimeout(r, 2000));
+
+            // 检查是否还在播放状态
+            if (this.state.isPaused || !this.state.isAudioOn || this.readGeneration !== myGen) {
+              ttsLog("[TTS] handleCustomRead: stopped during extended wait");
+              return;
+            }
+
+            // 检查是否有新的音频合成完成
+            const audioPaths = TTSUtil.getAudioPaths();
+            const hasNewAudio = audioPaths.some((p: any) => p.index === index);
+
+            if (hasNewAudio) {
+              ttsLog("[TTS] handleCustomRead: audio finally ready at index=" + index);
+              res = await this.handleSpeech(index);
+
+              if (res !== "error") {
+                ttsLog("[TTS] handleCustomRead: finally recovered at index=" + index);
+                break;
+              }
+            }
+          }
+        }
       }
       if (this.state.isPaused || !this.state.isAudioOn) return;
       let visibleTextList = await this.props.htmlBook.rendition.visibleText();
@@ -1181,6 +1241,7 @@ class TextToSpeech extends React.Component<
               let [voiceName, plugin] = selectedValue.split("#");
               const previousEngine =
                 ConfigService.getReaderConfig("voiceEngine");
+              ttsLog("[TTS] 用户切换语音: voiceName=" + voiceName + ", plugin=" + plugin + ", previousEngine=" + previousEngine);
               ConfigService.setReaderConfig("voiceName", voiceName);
               let voice = this.voices.find(
                 (item) => item.name === voiceName && item.plugin === plugin

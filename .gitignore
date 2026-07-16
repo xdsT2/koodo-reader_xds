@@ -58,3 +58,18 @@ kookit-extra-browser.mjs
 
 # Portable exe
 /test/doubao-tts-test/Koodo Reader-*.exe
+
+# Build artifacts
+app_new.asar
+app.spec
+
+# Logs
+debug.log
+
+# Large directories / models / build output
+chattts-ui-20260614/
+koodo-app/
+models/
+
+# AI workspace
+.workbuddy/
